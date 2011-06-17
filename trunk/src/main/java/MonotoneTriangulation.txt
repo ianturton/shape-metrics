@@ -1,0 +1,429 @@
+/**
+ * MonotoneTriangulation.java
+ * Copyright (C) 2001 Gianni Ceccarelli
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
+
+package computational.geometry.triangulation;
+
+import computational.*;
+import computational.geometry.*;
+import java.util.*;
+
+public class MonotoneTriangulation extends Triangulation {
+
+    private List triangles;
+    private List diagonals;
+
+
+    /************************************************************
+     *                     CONSTRUCTORS
+     ************************************************************/
+
+    public MonotoneTriangulation () {
+		this (new SimplePolygon ());
+    }
+
+    public MonotoneTriangulation (SimplePolygon p) {
+		this (p, new SilentLogManager ());
+    }
+
+    public MonotoneTriangulation (SimplePolygon p, LogManager history) {
+		super (p, history);
+		triangles = new ArrayList();
+		diagonals = new LinkedList();
+    }
+
+
+    /************************************************************
+     *                     CONCRETIZATION
+     ************************************************************/
+
+	public void checkPreconditions () throws PreconditionViolatedException {
+		Iterator i = getPolygon ().getVertices ().iterator ();
+		Polygon.Vertex prev = null;
+
+		while (i.hasNext ()) {
+			Polygon.Vertex v = (Polygon.Vertex) i.next ();
+			if (prev != null && 
+				prev.getX () == v.getX () && prev.getY () == v.getY ())
+				throw new PreconditionViolatedException ("Two vertices collide.");
+			prev = v;
+		}
+	}
+
+    public Collection getTriangles () {
+		if (!isUpdated ()) update ();
+		return triangles;
+    }
+
+    public Collection getDiagonals () {
+		if (!isUpdated ()) update ();
+		return diagonals;
+    }
+
+    private class VertexComparator implements Comparator {
+		public int compare(Object o1, Object o2) {
+			Polygon.Vertex v1=(Polygon.Vertex)o1;
+			Polygon.Vertex v2=(Polygon.Vertex)o2;
+			
+			if (v1.getY()<v2.getY()) return -1;
+			else if (v1.getY()>v2.getY()) return 1;
+			else if (v1.getX()<v2.getX()) return -1;
+			else if (v1.getX()>v2.getX()) return 1;
+			else return 0;
+		}
+    }
+	
+    private class EdgeComparator implements Comparator {
+		public int ycoord;
+		private double xcoord(Polygon.Edge e) {
+			List v=e.getVertices();
+			int x1=((Polygon.Vertex)v.get(0)).getX();int y1=((Polygon.Vertex)v.get(0)).getY();
+			int x2=((Polygon.Vertex)v.get(1)).getX();int y2=((Polygon.Vertex)v.get(1)).getY();
+			if (x1==x2) return x1;
+			if (y1==y2) return (x2+x1)/2;
+			/* supposing ycoord \in [y1,y2] */
+			return x1+(double)(x2-x1)/(y2-y1)*(ycoord-y1);
+		}
+		public int compare(Object o1, Object o2) {
+			Polygon.Edge e1=(Polygon.Edge)o1;
+			Polygon.Edge e2=(Polygon.Edge)o2;
+			double x1=xcoord(e1);double x2=xcoord(e2);
+			if (x1<x2) return -1;
+			else if (x1>x2) return 1;
+			else return 0;	/* Wrong?! */
+		}
+    }
+	
+    private HashMap helpers;
+    private EdgeComparator edgeC;
+    private VertexComparator vertC;
+    private TreeSet T;
+    private TreeSet Q;
+    private SimplePolygon p;
+	
+    private static final int STARTVERTEX=1;
+    private static final int ENDVERTEX=2;
+    private static final int SPLITVERTEX=3;
+    private static final int MERGEVERTEX=4;
+    private static final int REGULARVERTEX=5;
+	
+    private class SubChains {
+		public class DownVertices {
+			public Polygon.Vertex left;
+			public Polygon.Vertex right;
+			public DownVertices() {left=null;right=null;}
+			public DownVertices(Polygon.Vertex l,Polygon.Vertex r) {left=l;right=r;}
+		}
+		public ArrayList starts;
+		protected HashMap down;
+		public SubChains() {starts=new ArrayList();down=new HashMap();}
+		public void addStart(Polygon.Vertex v) {
+			down.put(v.getIndex(),new DownVertices(p.getNext(v),p.getPrevious(v)));
+			starts.add(v.getIndex());
+		}
+		public void addRegular(Polygon.Vertex v) {
+			Polygon.Vertex v1=p.getNext(v);
+			if (vertC.compare(v1,v)<0) v1=p.getPrevious(v);
+			down.put(v.getIndex(),new DownVertices(v1,null));
+	}
+		public void addSplit(Polygon.Vertex v) {
+			down.put(v.getIndex(),new DownVertices(p.getPrevious(v),p.getNext(v)));
+		}
+		public void addMerge(Polygon.Vertex vm,Polygon.Vertex v) {
+			down.put(vm.getIndex(),new DownVertices(v,null));
+		}
+		public void update(Polygon.Vertex vu,Polygon.Vertex v) {
+			DownVertices x=(DownVertices)down.get(vu.getIndex());
+			if (x!=null) {
+				if (x.left==null) x.left=v;	// if left=null, also right==null
+				else if (x.right==null) {
+					int t=BasicTests.turns(x.left,vu,v);
+					if (t==Turn.RIGHT) x.right=v; else {x.right=x.left;x.left=v;}
+					starts.add(vu.getIndex());	// now it has two down edges, so it is a start vertex for a montone component
+				} else {	// this is a start vertex or a split vertex...
+					DownVertices y=new DownVertices();
+					if (BasicTests.turns(x.left,vu,v)==Turn.LEFT) {	// this is a split vertex: diagonal on the left
+						y.left=v;y.right=x.left;
+						x.left=v;
+					} else if (BasicTests.turns(x.right,vu,v)==Turn.RIGHT) {	// this is a split vertex: diagonal on the right
+						y.right=v;y.left=x.right;
+						x.right=v;
+					} else {		// this must be a start vertex
+						y.right=x.right;y.left=v;
+						x.right=v;
+					}
+					down.put(new Integer(-vu.getIndex().intValue()-1),y);	// we have generated a new 'down' and modified the old one: add the new one
+					starts.add(new Integer(-vu.getIndex().intValue()-1));	// and treat it as a new start vertex (negative index just to get an unused one)
+				}
+			} else down.put(vu.getIndex(),new DownVertices(v,null));
+		}
+		private DownVertices down(int i) {
+			DownVertices x=(DownVertices)down.get(new Integer(i));
+			if (x==null) 
+				return new DownVertices(); 
+			else 
+				return x;
+		}
+	    
+		public ArrayList leftChain(int si) {
+			ArrayList lc=new ArrayList();
+			Polygon.Vertex s;
+			DownVertices x=down(si);	// ship first vertex: it's on the right chain
+			s=x.left;
+			while (s!=null) {
+				lc.add(s);
+				x=down(s.getIndex().intValue());
+				if (x.right!=null) s=x.right; else s=x.left;	// keep right if possible
+			}
+			return lc;
+		}
+		public ArrayList rightChain(int si) {
+			ArrayList rc=new ArrayList();
+			Polygon.Vertex s;
+			if (si<0) s=p.getVertex(-si-1);	// the index can be <0 (see SubChains::update), get real vertex
+			else s=p.getVertex(si);
+			rc.add(s);
+			DownVertices x=down(si);s=x.right;
+			while (s!=null) {
+				rc.add(s);
+				s=down(s.getIndex().intValue()).left;		// keep left (guaranteed to exist)
+			}
+			rc.remove(rc.size()-1);	// remove end vertex: it's on the left-chain
+			return rc;
+		}
+    }
+    private SubChains chains;
+	
+    private boolean biggerThanPi(Point p1, Point p2, Point p3) {
+		Point P0=Point.sub(p2,p1);
+		Point P1=Point.sub(p3,p2);
+		return (P0.getX()*P1.getY()-P0.getY()*P1.getX())>0;
+    }
+
+    private boolean insideOnRight(Polygon.Vertex v) {
+		Polygon.Vertex prev=p.getPrevious(v);
+		Polygon.Vertex next=p.getNext(v);
+		int prevH=vertC.compare(prev,v);
+		int nextH=vertC.compare(next,v);
+		if (prevH<0 && nextH>0) return true;
+		else return false;
+    }
+	
+    private Polygon.Edge justLeftOf(Polygon.Vertex v) {
+		SortedSet ss=T.headSet(p.new Edge(v,v));
+		if (ss.size()>0) return (Polygon.Edge)ss.last();
+		else return p.getEdge(v.getIndex().intValue());
+    }
+	
+    private int classifyVertex(Polygon.Vertex v) {
+		Polygon.Vertex prev=p.getPrevious(v);
+		Polygon.Vertex next=p.getNext(v);
+		
+		int prevH=vertC.compare(prev,v);
+		int nextH=vertC.compare(next,v);
+		if (prevH<0 && nextH<0) {
+			if (biggerThanPi(prev,v,next)) return MERGEVERTEX;
+			else return ENDVERTEX;
+		} else if (prevH>0 && nextH>0) {
+			if (biggerThanPi(prev,v,next)) return SPLITVERTEX;
+			else return STARTVERTEX;
+		} else return REGULARVERTEX;
+    }
+	
+    private void handleStart(Polygon.Vertex v) {
+		edgeC.ycoord=v.getY();
+		T.add(p.getEdge(v.getIndex().intValue()));
+		helpers.put(v.getIndex(),v);
+		chains.addStart(v);
+    }
+    private void handleEnd(Polygon.Vertex v) {
+		Polygon.Vertex ve=(Polygon.Vertex)helpers.get(p.getPrevious(v).getIndex());
+		if (classifyVertex(ve)==MERGEVERTEX) {
+			diagonals.add(new Diagonal(p,ve,v));
+			chains.addMerge(ve,v);
+		}
+		edgeC.ycoord=v.getY();
+		T.remove(p.getEdge(p.getPrevious(v).getIndex().intValue()));
+    }
+    private void handleSplit(Polygon.Vertex v) {
+		chains.addSplit(v);
+		edgeC.ycoord=v.getY();
+		Polygon.Edge ej=justLeftOf(v);Integer eind=((Integer)ej.getIndices().get(0));
+		Polygon.Vertex ve=(Polygon.Vertex)helpers.get(eind);
+		diagonals.add(new Diagonal(p,ve,v));
+		chains.update(ve,v);
+		helpers.put(eind,v);
+		T.add(p.getEdge(v.getIndex().intValue()));
+		helpers.put(v.getIndex(),v);
+    }
+    private void handleMerge(Polygon.Vertex v) {
+		Polygon.Vertex ve=(Polygon.Vertex)helpers.get(p.getPrevious(v).getIndex());
+		if (classifyVertex(ve)==MERGEVERTEX) {
+			diagonals.add(new Diagonal(p,ve,v));
+			chains.addMerge(ve,v);
+		}
+		edgeC.ycoord=v.getY();
+		T.remove(p.getEdge(p.getPrevious(v).getIndex().intValue()));
+		Polygon.Edge ej=justLeftOf(v);Integer eind=((Integer)ej.getIndices().get(0));
+	Polygon.Vertex vi=(Polygon.Vertex)helpers.get(eind);
+	if (classifyVertex(vi)==MERGEVERTEX) {
+	    diagonals.add(new Diagonal(p,vi,v));
+	    chains.addMerge(vi,v);
+	}
+	helpers.put(eind,v);
+    }
+    private void handleRegular(Polygon.Vertex v) {
+		chains.addRegular(v);
+		edgeC.ycoord=v.getY();
+		if (insideOnRight(v)) {
+			Polygon.Vertex ve=(Polygon.Vertex)helpers.get(p.getPrevious(v).getIndex());
+			if (classifyVertex(ve)==MERGEVERTEX) {
+				diagonals.add(new Diagonal(p,ve,v));
+				chains.addMerge(ve,v);
+			}
+			T.remove(p.getEdge(p.getPrevious(v).getIndex().intValue()));
+			T.add(p.getEdge(v.getIndex().intValue()));
+			helpers.put(v.getIndex(),v);
+		} else {
+			Polygon.Edge ej=justLeftOf(v);Integer eind=((Integer)ej.getIndices().get(0));
+			Polygon.Vertex ve=(Polygon.Vertex)helpers.get(eind);
+			if (classifyVertex(ve)==MERGEVERTEX) {
+				diagonals.add(new Diagonal(p,ve,v));
+				chains.addMerge(ve,v);
+			}
+			helpers.put(eind,v);
+		}
+    }
+	
+    private class SV {		// Side & Vertex: holds a vertex and whether it's on the left chain
+		public Polygon.Vertex v;
+		public boolean leftChain;
+		public SV(Polygon.Vertex e,boolean l) {v=e;leftChain=l;}
+		public SV(Object e,boolean l) {v=(Polygon.Vertex)e;leftChain=l;}
+    }
+    
+    private void triangulateMonotone(ArrayList lc, ArrayList rc) {
+		ArrayList points=new ArrayList();
+		// join the chains
+		int li=0;int ri=0;int c=0;
+		Polygon.Vertex l;Polygon.Vertex r;
+		
+		while (li<lc.size() && ri<rc.size()) {
+			l=(Polygon.Vertex)lc.get(li);r=(Polygon.Vertex)rc.get(ri);
+			if (l.equals(r)) {
+				points.add(new SV(l,true));c=0;
+				break;
+			} else {
+				c=vertC.compare(l,r);
+				if (c<0) {
+					points.add(new SV(l,true));
+					li++;
+				} else if (c>0) {
+					points.add(new SV(r,false));
+					ri++;
+				}
+			}
+		}
+		if (c!=0) {
+			while (li<lc.size()) {		// right-chain ends first
+				points.add(new SV(lc.get(li),true));
+				li++;
+			}
+		}
+		// add diagonals
+		if (points.size()<3) {			// should never happen!
+			System.out.println("??? less than 3 points?");
+			return;
+		}
+		
+		Stack s=new Stack();
+		s.push(points.get(0));s.push(points.get(1));
+		int j;SV uj;SV top;Diagonal d;
+		for (j=2;j<points.size()-1;j++) {
+			uj=(SV)points.get(j);top=(SV)s.peek();
+			if (uj.leftChain!=top.leftChain) {
+				while (s.size()>1) {
+					top=(SV)s.pop();
+					d=new Diagonal(p,uj.v,top.v);d.setLabel("T");
+					diagonals.add(d);
+				}
+				s.pop();s.push(points.get(j-1));s.push(points.get(j));
+			} else {
+				SV last=(SV)s.pop();top=(SV)s.peek();
+				int t;
+				if (uj.leftChain) t=Turn.RIGHT; else t=Turn.LEFT;
+				while (BasicTests.turns(uj.v,last.v,top.v)==t) {
+					s.pop();
+					d=new Diagonal(p,uj.v,top.v);d.setLabel("T");
+					diagonals.add(d);
+					last=top;
+					if (s.empty()) break; else top=(SV)s.peek();
+				}
+				s.push(last);
+				s.push(uj);
+			}
+		}
+		uj=(SV)points.get(points.size()-1);s.pop();
+		while (s.size()>1) {
+			top=(SV)s.pop();
+			d=new Diagonal(p,uj.v,top.v);d.setLabel("T");	// why the label is not shown??
+			diagonals.add(d);
+		}
+		
+    }
+	
+    public void update () {
+		p=getPolygon();
+		
+		ArrayList vertices=(ArrayList)p.getVertices();
+		diagonals.clear();
+		
+		edgeC=new EdgeComparator();vertC=new VertexComparator();
+		T=new TreeSet(edgeC);Q=new TreeSet(vertC);
+		Q.addAll(vertices);
+		helpers=new HashMap(vertices.size()*4/3);
+		chains=new SubChains();
+		
+		while (!Q.isEmpty()) {
+			Polygon.Vertex v=(Polygon.Vertex)Q.first();
+			Q.remove(v);
+			switch (classifyVertex(v)) {
+			case STARTVERTEX: 
+				handleStart(v);break;
+			case ENDVERTEX: 
+				handleEnd(v);break;
+			case SPLITVERTEX: 
+				handleSplit(v);break;
+			case MERGEVERTEX: 
+				handleMerge(v);break;
+			case REGULARVERTEX: 
+				handleRegular(v);break;
+			default: 
+			}
+		}
+		
+		Iterator i=chains.starts.iterator();
+		Integer v;
+		while (i.hasNext()) {
+			v=(Integer)i.next();
+			triangulateMonotone(chains.leftChain(v.intValue()),chains.rightChain(v.intValue()));
+	    }
+		setUpdated(true);
+    }
+	
+}
